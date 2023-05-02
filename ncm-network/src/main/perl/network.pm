@@ -431,6 +431,11 @@ sub test_network_ccm_fetch
     $self->verbose("$func: trying ccm-fetch");
     # no runrun, as it would trigger error (and dependency failure)
     my $dbglvl = $self->{LOGGER} ? $self->{LOGGER}->get_debuglevel() : 0;
+
+    # TODO: need to find a better testing for this.
+    # ccm-fetrch failure takes over 7min to recover. This is becuase ccm.conf is set to
+    # retrieve_wait 150, and retries 3.
+    # --retrieve_wait and --retrieve_retries options do not override. Bug upstream?
     my $cmd = ["ccm-fetch"];
     push(@$cmd, "--debug", $dbglvl) if $dbglvl;
     my $output = CAF::Process->new($cmd, log => $self)->output();
@@ -665,7 +670,6 @@ sub runrun
 
     return join("", @output);
 }
-
 
 # Create a mapping of device names to MAC address
 # Returns hashref with key found device name and value (lowercase) MAC
@@ -951,9 +955,17 @@ sub make_ifcfg
     &$makeline('nmcontrolled', var => 'nm_controlled', bool => 'yesno', def => 0, quote => 1);
 
     &$makeline('device', def => $ifacename);
-
+    &$makeline('name', def => $ifacename);
     &$makeline('type', def => 'Ethernet');
+    my $if_uuid = gen_uuid($self, $ifacename);
 
+    # add uuid ifcfg file only if we managed to generate a uuid.
+    # this needed for nm to favour files in ifcfg if interface config for same exists in both locations.
+    if (is_valid_uuid($if_uuid)){
+        &$makeline('uuid', def => $if_uuid);
+    } else {
+        $self->verbose("$if_uuid is invalid format, not setting uuid for $ifacename");
+    }
     if ( ($iface->{type} || '') =~ m/^OVS/) {
         # Set OVS related variables
         push(@text, "DEVICETYPE='ovs'");
@@ -976,7 +988,6 @@ sub make_ifcfg
 
     # set the HWADDR
     &$makeline('hwaddr') if $iface->{set_hwaddr};
-
     &$makeline('mtu');
 
     # set the bootprotocol
@@ -1118,7 +1129,6 @@ sub make_ifcfg
         &$vxlanml('dstport');
         &$vxlanml('gbp', bool => 'yesno');
     };
-
     return \@text;
 }
 
@@ -1134,7 +1144,7 @@ sub make_ifcfg_route4_legacy
             &$makeline($attr, var => "$attr$idx", def => ($attr eq 'netmask') ? '255.255.255.255' : undef);
         }
     }
-
+    
     return \@text;
 }
 
@@ -1404,23 +1414,32 @@ sub make_ifup
     return \%ifup;
 }
 
-# enable the network service
-#   without enabled network service, this component is pointless
-#   best to also enable the network service with ncm-chkconfig
+
+# enable the network service or NetwrokManager if allow_nm = true
+# without enabled network service, this component is pointless
+# best to also enable the network service with ncm-chkconfig
 sub enable_network_service
 {
-    my ($self) = @_;
-    # do not start it!
-    return $self->runrun([qw(/sbin/chkconfig --level 2345 network on)]);
+    my ($self, $allow) = @_;
+    #allow_nm = true then we won't want to enable old netwrok service which will fail on rhel9+
+    if (defined($allow) && !$allow) {
+        return $self->runrun([qw(/sbin/chkconfig --level 2345 network on)]);
+    } else {
+        my @enablenm_cmds;
+        $self->verbose("Enabling network manager");
+        push(@enablenm_cmds, [qw(/usr/bin/systemctl enable NetworkManager)]);
+        push(@enablenm_cmds, [CAF::Service->new(["NetworkManager"], log => $self), "start"]);
+        return $self->runrun(@enablenm_cmds)
+    }
 }
 
 # If allow is defined and false, disable and stop NetworkManager
 sub disable_networkmanager
 {
     my ($self, $allow) = @_;
-
     # allow NetworkMnager to run or not?
     if (defined($allow) && !$allow) {
+        $self->info("disabling network mananger");
         # no checking, forcefully stopping NetworkManager
         # warning: this can cause troubles with the recovery to previous state in case of failure
         # it's always better to disable the NetworkManager service with ncm-chkconfig and have it run pre ncm-network
@@ -1471,16 +1490,18 @@ sub set_hostname
 # Returns if something was done or not
 sub stop
 {
-    my ($self, $exifiles, $ifdown, $nwsrv) = @_;
+    my ($self, $exifiles, $ifdown, $nwsrv, $allow) = @_;
 
     my @ifaces = sort keys %$ifdown;
 
     my $action;
     my $nwupdated = $exifiles->{$NETWORKCFG} == $UPDATED;
-
     if ($nwupdated || @ifaces) {
         if (@ifaces) {
             my @cmds;
+            if (defined($allow) && $allow) {
+                push(@cmds, [qw(nmcli connection reload)]);
+            }
             foreach my $iface (@ifaces) {
                 # how do we actually know that the device was up?
                 # eg for non-existing device eth4: /sbin/ifdown eth4 --> usage: ifdown <device name>
@@ -1549,20 +1570,24 @@ sub deploy_config
 # Returns if something was done or not
 sub start
 {
-    my ($self, $exifiles, $ifup, $nwsrv) = @_;
+    my ($self, $exifiles, $ifup, $nwsrv, $allow) = @_;
 
     my @ifaces = sort keys %$ifup;
     my $nwstate = $exifiles->{$NETWORKCFG};
 
     my $action;
+
     if (($nwstate == $UPDATED) || ($nwstate == $NEW)) {
         $self->verbose("$NETWORKCFG ", ($nwstate == $NEW ? 'NEW' : 'UPDATED'), " starting network");
         $action = 1;
         $nwsrv->start();
     } elsif (@ifaces) {
         my @cmds;
+        if (defined($allow) && $allow) {
+            push(@cmds, [qw(nmcli connection reload)]);
+        }
         foreach my $iface (@ifaces) {
-            push(@cmds, ["/sbin/ifup", $iface, "boot"]);
+            push(@cmds, ["/sbin/ifup", $iface]);
             push(@cmds, [qw(sleep 10)]) if ($iface =~ m/bond/);
         }
         $self->verbose("Starting interfaces ",join(', ', @ifaces));
@@ -1937,6 +1962,66 @@ sub routing_table
     }
 }
 
+sub is_valid_uuid
+{
+     my ($uuid) = @_;
+     if ($uuid =~ /[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89aAbB][a-f0-9]{3}-[a-f0-9]{12}/) {
+         return 1; # true
+     }
+     return 0; # false
+}
+# function to genreate interface uuuid so the NM connections between ifcfg and nmconnection will be same.
+sub gen_uuid
+{
+    my ($self, $device) = @_;
+    my $uuid_out;
+    $self->verbose("Find uuid for the device $device");
+    my $proc = CAF::Process->new(["nmcli --get-values connection.uuid conn show --active $device"],
+                                 stdout => \$uuid_out,
+                                 stderr => "stdout",
+                                 log => $self,
+                                 keeps_state => 1);
+    if (! $proc->execute()) {
+        $uuid_out = "" if (! defined($uuid_out));
+        $self->error("Running \"$proc\" failed: output $uuid_out");
+    }
+    # if device isn't active, check ifcfg file has one and use that.
+    if (! is_valid_uuid($uuid_out)) {
+        $self->verbose("no uuid from from active connection, check ifcfg file");
+        if (my $fh = CAF::FileReader->open ("/etc/sysconfig/network-scripts/ifcfg-$device")) {
+            my %ifhash = map { split /=|\s+/; } <$fh>;
+            $uuid_out=$ifhash{UUID};
+            if ($uuid_out){
+                $self->verbose("UUID found in existing config file: $ifhash{UUID}");
+            }
+        }
+    }
+    if (! is_valid_uuid($uuid_out)) {
+        my $new_uuid;
+        $self->verbose("uuid not found in active connections or in ifcfg file, generating one for $device");
+        my $proc = CAF::Process->new(["/usr/bin/uuidgen"],
+                            stdout => \$new_uuid,
+                            stderr => "stdout",
+                            log => $self,
+                            keeps_state => 1);
+        if (! $proc->execute()) {
+            $new_uuid = "" if (! defined($new_uuid));
+            $self->error("Running \"$proc\" failed: output $new_uuid");
+        }
+        # at this point if we dont have uuid, give up.
+        if (is_valid_uuid($new_uuid)) {
+            $uuid_out = $new_uuid;
+        } else {
+            $uuid_out = ""
+        };
+    } else {
+        $self->verbose("found exisiting uuid for $device: $uuid_out");
+    }
+    $self->verbose("uuid for $device is: $uuid_out");
+    chomp($uuid_out);
+    return $uuid_out
+}
+
 
 sub Configure
 {
@@ -2089,10 +2174,10 @@ sub Configure
     #
     # Action starts here
     #
+    my $allow_nm = $nwtree->{allow_nm};
+    $self->enable_network_service($allow_nm);
 
-    $self->enable_network_service();
-
-    $self->disable_networkmanager($nwtree->{allow_nm});
+    $self->disable_networkmanager($allow_nm);
 
     $self->start_openvswitch($ifaces, $ifup);
 
@@ -2112,7 +2197,11 @@ sub Configure
     #   1. stop everythig using old config
     #   2. replace updated/new config; remove REMOVE
     #   3. (re)start things
-    my $nwsrv = CAF::Service->new(['network'], log => $self);
+    my $service_name = "network";
+    if (defined($allow_nm) && $allow_nm) {
+        $service_name = "NetworkManager";  
+    };
+    my $nwsrv = CAF::Service->new([$service_name], log => $self);
 
     # Rename special/magic RESOLV_CONF_SAVE, so it does not get picked up by ifdown.
     # If it exists, and contains faulty DNS config, things might go haywire.
@@ -2123,7 +2212,7 @@ sub Configure
     # as it does not manage /etc/resolv.conf). Without working DNS, the ccm-fetch network test will probably fail.
     $self->move($RESOLV_CONF_SAVE, $RESOLV_CONF_SAVE.$RESOLV_SUFFIX);
 
-    my $stopstart = $self->stop($exifiles, $ifdown, $nwsrv);
+    my $stopstart = $self->stop($exifiles, $ifdown, $nwsrv, $allow_nm);
 
     $init_config .= "\nPOST STOP\n";
     $init_config .= $self->get_current_config();
@@ -2161,7 +2250,7 @@ sub Configure
     # Save/Restore last known working (i.e. initial) /etc/resolv.conf
     $resolv_conf_fh->close();
 
-    $stopstart += $self->start($exifiles, $ifup, $nwsrv);
+    $stopstart += $self->start($exifiles, $ifup, $nwsrv, $allow_nm);
 
     # sanity check
     if ($config_changed) {
