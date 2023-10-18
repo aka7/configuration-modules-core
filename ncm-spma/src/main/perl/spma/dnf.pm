@@ -27,6 +27,8 @@ use constant REPOS_TREE          => "/software/repositories";
 use constant DNF_MODULES_DIR     => "/etc/dnf/modules.defaults.d";
 use constant MODULES_TREE        => "/software/modules";
 use constant PKGS_TREE           => "/software/packages";
+use constant PKGS_TREE_EFI       => "/software/packages_efi";
+use constant PKGS_TREE_BIOS      => "/software/packages_bios";
 use constant CMP_TREE            => "/software/components/spma";
 use constant DNF_PACKAGE_LIST    => "/etc/dnf/plugins/versionlock.list";
 use constant DNF_CONF_FILE       => "/etc/dnf/dnf.conf";
@@ -34,7 +36,8 @@ use constant RPM_QUERY_INSTALLED => qw(rpm -qa --nosignature --nodigest --qf %{N
 use constant RPM_QUERY_SPMA      => qw(rpm -q --qf %{NEVRA} ncm-spma);
 use constant REPO_AVAIL_PKGS     => qw(dnf repoquery --show-duplicates --all --quiet --qf %{NAME};%{EPOCH};%{VERSION};%{RELEASE};%{ARCH});
 use constant DNF_PLUGIN_OPTS     => qw(--disableplugin=* --enableplugin=versionlock);
-use constant DNF_CLEAN_ALL       => qw(dnf clean all);
+use constant DNF_CLEAN_ALL       => qw([ dnf clean all ]);
+use constant EFI_PATH      => "/sys/firmware/efi";
 use constant DNF_INFO_GLIBC      => qw(dnf info glibc);
 use constant DNF_INSTALL         => qw(dnf install --nogpgcheck --assumeno --releasever=/);
 use constant DNF_SHELL           => qw(dnf shell --noautoremove -y);
@@ -101,10 +104,22 @@ sub get_installed_rpms
         $self->error("Error getting list of installed packages.");
         return undef;
     }
-
     return Set::Scalar->new(split (/\n/, $cmd_out));
 }
 
+sub is_efi_host
+{
+    my $self = shift;
+
+    my ($cmd_exit, $cmd_out, $cmd_err) = $self->execute_command(['ls', EFI_PATH], "check if system is efi", 1, "/dev/null", 1);
+    if ($cmd_exit) {
+         $self->verbose("Bios host $cmd_err");
+         return 0;
+    } else {
+         $self->verbose("EFI host");
+         return 1;
+    }
+}
 # configure default modules via config file
 # if a file changes, we reset the module so updates for the module can happen when switching streams.
 sub generate_dnf_modules {
@@ -328,12 +343,29 @@ sub Configure
     #      specified on dnf install commandline will skip older version-locked package but
     #      will install the latest what is undesired. Simply keep only version-locked variant.
     my $pkgs               = $config->getElement(PKGS_TREE)->getTree();
+    
+    # install right set of packages by checking if system is efi or legacy bios.
+    # different set grub2 packages needs to be installed based on this check.
+    my $efi_check = $t->{enable_efi_check} || 0;
+    if ($efi_check) {
+        my $pkgs_extra = ();
+        if ($self->is_efi_host) {
+            $self->info("Will install package listed bios_packages");
+            $pkgs_extra = $config->getElement(PKGS_TREE_EFI)->getTree();
+        } else {
+            $self->info("Will install packages listed in efi_packages");
+            $pkgs_extra = $config->getElement(PKGS_TREE_BIOS)->getTree();
+        }
+        $pkgs = { %$pkgs, %$pkgs_extra };
+    }
     my $wanted_pkgs        = Set::Scalar->new();
     my $wanted_pkgs_locked = Set::Scalar->new();
     my $wanted_pkgs_v      = Set::Scalar->new();        # packages with only version specified
     my $wanted_pkgs_a      = Set::Scalar->new();        # packages with only arch specified
     my $found_spma         = 0;
 
+    
+    
     while (my ($key, $vra) = each %$pkgs) {
         my $name = unescape $key;
 

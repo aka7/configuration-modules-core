@@ -20,6 +20,7 @@ type component_spma_dnf = {
     "proxyrandom"        ? boolean  # randomize proxyhost
     "proxytype"          ? string with match (SELF, '^(forward|reverse)$') # select proxy type, forward or reverse
     "run"                ? boolean  # Run the transaction after configuring DNF
+    "enable_efi_check"   : boolean = false # check if system is efi or not to install different set of packages
 };
 
 @{DNF module structure. To be used as dict, with name as key.
