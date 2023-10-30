@@ -19,10 +19,56 @@ use LC::Check;
 use constant UMOUNT => "/bin/umount";
 use constant REMOUNT => qw(/bin/mount -o remount);
 use constant MOUNT => qw(/bin/mount);
+use constant EFI_PATH  => "/sys/firmware/efi";
 
 our @ISA = qw(NCM::Component);
 our $EC = LC::Exception::Context->new()->will_store_all();
 our $NoActionSupported = 1;
+
+sub execute_command
+{
+    my ($self, $command, $why, $keeps_state, $stdin, $nolog) = @_;
+
+    my (%opts, $out, $err, @missing);
+
+    %opts = (log    => $self,
+        stdout      => \$out,
+        stderr      => \$err,
+        keeps_state => $keeps_state);
+
+    $opts{stdin} = $stdin if defined($stdin);
+
+    my $cmd = CAF::Process->new($command, %opts);
+
+    $cmd->info("$why");
+    $self->log("[EXEC] ", join(" ", @$command));
+    $cmd->execute();
+    if (!defined($nolog)) {
+        $self->log("$why stderr:\n$err") if (defined($err) && $err ne '');
+        $self->log("$why stdout:\n$out") if (defined($out) && $out ne '');
+    }
+
+    if ($CAF::Object::NoAction && !$keeps_state) {
+        return (0, undef, undef);
+    }
+
+    return ($?, $out, $err);
+}
+
+# check if host is efi
+sub is_efi_host
+{
+    my $self = shift;
+
+    my ($cmd_exit, $cmd_out, $cmd_err) = $self->execute_command(['ls', EFI_PATH], "check if system is efi", 1, "/dev/null", 1);
+    if ($cmd_exit) {
+         $self->verbose("Bios host, Do not mount /boot/efi");
+         return 0;
+    } else {
+         $self->verbose("EFI host. Will mount /boot/efi");
+         return 1;
+    }
+}
 
 # Updates entries in /etc/fstab. Returns a hash with the mountpoints
 # that exist in the profile.
@@ -42,6 +88,7 @@ sub update_entries
         $self->debug (3, "Checking fstab entry at $fs->{mountpoint}");
         $fs->update_fstab($fstab, $protected);
         next if $fs->{type} eq 'swap';
+        next if $fs->{mountpoint} eq '/boot/efi' && !$self->is_efi_host;
         $mounts{$fs->{mountpoint}} = $fs;
     }
 
