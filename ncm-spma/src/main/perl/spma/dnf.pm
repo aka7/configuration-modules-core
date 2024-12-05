@@ -562,7 +562,7 @@ sub Configure
         # Do not remove whitelisted packages.
         if (defined($whitelist)) {
             for my $white_pkg (@$whitelist) {
-                if (index($rpm_version, $white_pkg) == 0 || match_glob($white_pkg, $rpm_version)) {
+                if (index($rpm_version, $white_pkg) == 0 || match_glob($white_pkg, $rpm)) {
                     $will_remove->delete($rpm);
                     $whitelisted->insert($rpm);
                 }
