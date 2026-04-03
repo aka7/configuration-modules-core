@@ -52,6 +52,27 @@ type structure_network_route_backend_specific = {
     "initrwnd" ? long(10..)
 };
 
+@documentation{
+    nmstate alternative interface name entry.
+}
+type structure_nmstate_altname = {
+    @{Alternative name value.}
+    "name" : string
+};
+
+@documentation{
+    network interface settings specific to nmstate backend
+}
+type network_interface_backend_specific = {
+    @{Alternative interface names.
+        These values are used by the nmstate backend to generate interface alt-names entries.
+        supported from nmstate version >= 2.2.51.
+        Currently only works for physical interfaces only, there is bug in nmstate which will break this if alt-names are added for virtual
+        interfaces, tracked by RHEL at https://redhat.atlassian.net/browse/RHEL-167955
+        }
+    "altnames" ? structure_nmstate_altname[]
+};
+
 function network_valid_route = {
     if (exists(SELF['command'])) {
         if (length(SELF) != 1) error("Cannot use command and any of the other attributes as route");
