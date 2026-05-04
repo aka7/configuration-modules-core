@@ -5,4 +5,4 @@ multiline
 ^\[logging\]$
 ^\[libdefaults\]$
 ^\[realms\]$
-^\[domain_realms\]$
+^\[domain_realm\]$

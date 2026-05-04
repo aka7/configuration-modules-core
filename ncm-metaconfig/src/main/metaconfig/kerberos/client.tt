@@ -19,7 +19,7 @@
 }
 [%- END %]
 
-[domain_realms]
+[domain_realm]
 [% FOREACH r IN domain_realms.pairs %]
 .[% r.key %] = [% r.value %]
 [% END %]
