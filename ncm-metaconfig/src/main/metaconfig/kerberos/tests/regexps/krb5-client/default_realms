@@ -4,5 +4,5 @@ multiline
 ---
 ^\[libdefaults\]$
 ^default_realm\s=\sKDC\.REALM$
-^\[domain_realms\]$
+^\[domain_realm\]$
 ^\.DEFAULT_DOMAIN\s=\sKDC\.REALM$
