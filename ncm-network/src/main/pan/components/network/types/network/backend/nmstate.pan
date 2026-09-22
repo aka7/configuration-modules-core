@@ -52,6 +52,37 @@ type structure_network_route_backend_specific = {
     "initrwnd" ? long(10..)
 };
 
+@documentation{
+    SR-IOV virtual function configuration.
+    Virtual functions can currently be assigned only as bond slaves.
+}
+type sriov_interface = {
+    @{Bonding master.}
+    "master" ? string
+    @{VF MAC address.}
+    "mac" ? string
+    @{Whether spoof checking is enabled.}
+    "spoof_check" ? boolean
+    @{Whether the VF is trusted.}
+    "trust" ? boolean
+    @{Minimum transmit rate in Mbps.}
+    "min_tx_rate" ? long(0..)
+    @{Maximum transmit rate in Mbps.}
+    "max_tx_rate" ? long(0..)
+    @{VF VLAN identifier.}
+    "vlanid" ? long(0..4095)
+    @{VF VLAN quality of service value.}
+    "qos" ? long(0..)
+    @{VF VLAN protocol.}
+    "vlan_proto" ? choice('802.1q', '802.1ad')
+    "bootproto" ? choice('none')
+};
+
+type network_interface_backend_specific = {
+    @{SR-IOV virtual functions to create for this physical interface.}
+    "sriov" ? sriov_interface[]
+};
+
 function network_valid_route = {
     if (exists(SELF['command'])) {
         if (length(SELF) != 1) error("Cannot use command and any of the other attributes as route");
